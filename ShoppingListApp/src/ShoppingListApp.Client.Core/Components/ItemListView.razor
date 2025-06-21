@@ -1,0 +1,288 @@
+@using ShoppingListApp.Shared.Models
+@using ShoppingListApp.Client.Core.Data
+@using ShoppingListApp.Client.Core.Services
+@inject ShoppingRepository Repository
+@inject SyncService SyncSvc
+@inject ILogger<ItemListView> Logger
+
+<div class="item-list-view container-fluid">
+    <h3>My Shopping List</h3>
+
+    <button class="btn btn-success mb-3" @onclick="TriggerSync">
+        <i class="fas fa-sync-alt"></i> Sync with Server
+    </button>
+    @if (isSyncing)
+    {
+        <p class="text-info">Syncing...</p>
+    }
+     @if (!string.IsNullOrEmpty(syncStatusMessage))
+    {
+        <p class="text-@(syncStatusMessage.StartsWith("Error") ? "danger" : "success")">@syncStatusMessage</p>
+    }
+
+
+    <FilterSortPanel Categories="allCategories" OnFilterChanged="HandleFilterChanged" />
+
+    <div class="mb-3">
+        <input type="text" class="form-control" placeholder="New item name" @bind="newItemName" />
+         <select class="form-select mt-2" @bind="newItemCategoryId">
+            <option value="@Guid.Empty">Select Category</option>
+            @if (allCategories != null)
+            {
+                @foreach (var category in allCategories)
+                {
+                    <option value="@category.Id">@category.Name</option>
+                }
+            }
+        </select>
+        <select class="form-select mt-2" @bind="newItemStoreId">
+            <option value="@Guid.Empty">Select Store</option>
+            @if (allStores != null)
+            {
+                @foreach (var store in allStores)
+                {
+                    <option value="@store.Id">@store.Name</option>
+                }
+            }
+        </select>
+        <select class="form-select mt-2" @bind="newItemUserListId">
+            <option value="@Guid.Empty">Select List</option>
+            @if (allUserLists != null)
+            {
+                @foreach (var uList in allUserLists)
+                {
+                    <option value="@uList.Id">@uList.Name</option>
+                }
+            }
+        </select>
+        <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" @bind="newItemIsRecurring" id="isRecurringCheck">
+            <label class="form-check-label" for="isRecurringCheck">Is Recurring?</label>
+        </div>
+        <button class="btn btn-primary mt-2" @onclick="AddNewItem">Add Item</button>
+    </div>
+
+    @if (isLoading)
+    {
+        <p><em>Loading items...</em></p>
+    }
+    else if (DisplayedItems == null || !DisplayedItems.Any())
+    {
+        <p>No items in the list. Add some!</p>
+    }
+    else
+    {
+        <div class="list-group">
+            @foreach (var item in DisplayedItems)
+            {
+                <ItemView Item="item" OnItemChanged="HandleItemUpdated" OnItemDeleted="HandleItemDeletedLocally" />
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private List<ListItem>? allListItems;
+    private List<ListItem>? DisplayedItems;
+    private List<Category>? allCategories;
+    private List<Store>? allStores;
+    private List<UserList>? allUserLists;
+
+    private bool isLoading = true;
+    private bool isSyncing = false;
+    private string syncStatusMessage = string.Empty;
+
+    // For new item
+    private string newItemName = string.Empty;
+    private Guid newItemCategoryId = Guid.Empty;
+    private Guid newItemStoreId = Guid.Empty;
+    private Guid newItemUserListId = Guid.Empty;
+    private bool newItemIsRecurring = false;
+
+
+    private FilterSortPanel.FilterCriteria currentFilter = new FilterSortPanel.FilterCriteria();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Logger.LogInformation("ItemListView initializing...");
+        await LoadDataAsync();
+        isLoading = false;
+    }
+
+    private async Task LoadDataAsync()
+    {
+        try
+        {
+            isLoading = true;
+            allListItems = await Repository.GetActiveListItemsAsync(); // Initially load active, non-archived
+            allCategories = await Repository.GetAllCategoriesAsync();
+            allStores = await Repository.GetAllStoresAsync();
+            allUserLists = await Repository.GetAllUserListsAsync();
+
+            // Set default list if available for new items
+            if (allUserLists != null && allUserLists.Any() && newItemUserListId == Guid.Empty)
+            {
+                newItemUserListId = allUserLists.First().Id;
+            }
+            if (allCategories != null && allCategories.Any() && newItemCategoryId == Guid.Empty)
+            {
+                 newItemCategoryId = allCategories.First().Id;
+            }
+            if (allStores != null && allStores.Any() && newItemStoreId == Guid.Empty)
+            {
+                newItemStoreId = allStores.First().Id;
+            }
+
+
+            ApplyFiltersAndSort();
+            isLoading = false;
+            StateHasChanged(); // Ensure UI updates
+            Logger.LogInformation("Data loaded. Items: {ItemCount}, Categories: {CategoryCount}, Stores: {StoreCount}, UserLists: {UserListCount}",
+                allListItems?.Count ?? 0, allCategories?.Count ?? 0, allStores?.Count ?? 0, allUserLists?.Count ?? 0);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading data.");
+            isLoading = false;
+        }
+    }
+
+    private async Task AddNewItem()
+    {
+        if (string.IsNullOrWhiteSpace(newItemName) || newItemCategoryId == Guid.Empty || newItemStoreId == Guid.Empty || newItemUserListId == Guid.Empty)
+        {
+            Logger.LogWarning("Cannot add new item. Required fields missing.");
+            syncStatusMessage = "Error: Item name, category, store, and list are required.";
+            return;
+        }
+
+        var newItem = new ListItem
+        {
+            Id = Guid.NewGuid(),
+            Name = newItemName,
+            CategoryId = newItemCategoryId,
+            StoreId = newItemStoreId,
+            UserListId = newItemUserListId,
+            IsRecurring = newItemIsRecurring,
+            IsActive = true,
+            IsArchived = false,
+            PurchaseType = PurchaseType.Offline // Default, can be changed later
+        };
+
+        try
+        {
+            await Repository.AddListItemAsync(newItem);
+            Logger.LogInformation("New item '{ItemName}' added locally.", newItem.Name);
+            newItemName = string.Empty; // Reset input
+            // Optionally reset other fields or keep them for faster multi-add
+
+            await LoadDataAsync(); // Reload data to show the new item
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error adding new item '{ItemName}'.", newItem.Name);
+            syncStatusMessage = $"Error: Could not add item '{newItem.Name}'.";
+        }
+    }
+
+    private void HandleFilterChanged(FilterSortPanel.FilterCriteria criteria)
+    {
+        currentFilter = criteria;
+        Logger.LogInformation("Filter criteria changed. Applying new filters.");
+        ApplyFiltersAndSort();
+        StateHasChanged();
+    }
+
+    private void ApplyFiltersAndSort()
+    {
+        if (allListItems == null)
+        {
+            DisplayedItems = new List<ListItem>();
+            return;
+        }
+
+        IEnumerable<ListItem> filtered = allListItems;
+
+        // Filter by text
+        if (!string.IsNullOrWhiteSpace(currentFilter.FilterText))
+        {
+            filtered = filtered.Where(item => item.Name.Contains(currentFilter.FilterText, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Filter by category
+        if (currentFilter.CategoryId != Guid.Empty)
+        {
+            filtered = filtered.Where(item => item.CategoryId == currentFilter.CategoryId);
+        }
+
+        // Sort
+        switch (currentFilter.CurrentSortOrder)
+        {
+            case FilterSortPanel.SortOrder.NameAsc:
+                filtered = filtered.OrderBy(item => item.Name);
+                break;
+            case FilterSortPanel.SortOrder.NameDesc:
+                filtered = filtered.OrderByDescending(item => item.Name);
+                break;
+            case FilterSortPanel.SortOrder.CategoryNameAsc:
+                filtered = filtered.OrderBy(item => item.Category?.Name);
+                break;
+            case FilterSortPanel.SortOrder.CategoryNameDesc:
+                filtered = filtered.OrderByDescending(item => item.Category?.Name);
+                break;
+            case FilterSortPanel.SortOrder.None:
+            default:
+                // No specific sort or keep original order (e.g. by date added if available)
+                break;
+        }
+        DisplayedItems = filtered.ToList();
+        Logger.LogDebug("Filters and sort applied. Displayed items: {DisplayedCount}", DisplayedItems.Count);
+    }
+
+
+    private async Task HandleItemUpdated(ListItem updatedItem)
+    {
+        Logger.LogInformation("Item '{ItemName}' (ID: {ItemId}) was updated in ItemView. Reloading data.", updatedItem.Name, updatedItem.Id);
+        // The item in 'allListItems' should be the same instance if ItemView modifies it directly.
+        // However, it's safer to reload or update the specific item in the list.
+        // For simplicity here, just re-apply filters which will use the (potentially) modified items.
+        ApplyFiltersAndSort();
+        StateHasChanged();
+    }
+
+    private async Task HandleItemDeletedLocally(Guid itemId)
+    {
+        Logger.LogInformation("Item (ID: {ItemId}) was deleted locally via ItemView. Removing from list and reloading.", itemId);
+        allListItems?.RemoveAll(item => item.Id == itemId);
+        ApplyFiltersAndSort();
+        StateHasChanged();
+    }
+
+    private async Task TriggerSync()
+    {
+        isSyncing = true;
+        syncStatusMessage = "Syncing...";
+        StateHasChanged();
+        Logger.LogInformation("Sync triggered by user.");
+
+        bool success = await SyncSvc.PerformSyncAsync();
+        if (success)
+        {
+            syncStatusMessage = "Sync successful!";
+            Logger.LogInformation("Sync completed successfully.");
+            await LoadDataAsync(); // Reload data from local DB after sync
+        }
+        else
+        {
+            syncStatusMessage = "Error: Sync failed. Check logs for details.";
+            Logger.LogError("Sync failed.");
+        }
+        isSyncing = false;
+        StateHasChanged();
+
+        // Optionally clear the message after a few seconds
+        await Task.Delay(5000);
+        syncStatusMessage = string.Empty;
+        StateHasChanged();
+    }
+}
