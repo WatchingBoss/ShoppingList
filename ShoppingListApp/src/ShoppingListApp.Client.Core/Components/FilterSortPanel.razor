@@ -1,0 +1,80 @@
+@using ShoppingListApp.Shared.Models
+@inject ILogger<FilterSortPanel> Logger
+
+<div class="filter-sort-panel card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Filter & Sort</h5>
+        <div class="row">
+            <div class="col-md-4">
+                <label for="filterText" class="form-label">Filter by Name:</label>
+                <input type="text" id="filterText" class="form-control" @bind="FilterText" @bind:event="oninput" />
+            </div>
+            <div class="col-md-4">
+                <label for="categoryFilter" class="form-label">Category:</label>
+                <select id="categoryFilter" class="form-select" @bind="SelectedCategoryId">
+                    <option value="@Guid.Empty">All Categories</option>
+                    @if (Categories != null)
+                    {
+                        @foreach (var category in Categories)
+                        {
+                            <option value="@category.Id">@category.Name</option>
+                        }
+                    }
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label for="sortOrder" class="form-label">Sort by:</label>
+                <select id="sortOrder" class="form-select" @bind="CurrentSortOrder">
+                    <option value="@SortOrder.None">None</option>
+                    <option value="@SortOrder.NameAsc">Name (A-Z)</option>
+                    <option value="@SortOrder.NameDesc">Name (Z-A)</option>
+                    <option value="@SortOrder.CategoryNameAsc">Category (A-Z)</option>
+                    <option value="@SortOrder.CategoryNameDesc">Category (Z-A)</option>
+                </select>
+            </div>
+        </div>
+        <button class="btn btn-primary mt-2" @onclick="ApplyFilters">Apply</button>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public List<Category>? Categories { get; set; }
+
+    [Parameter]
+    public EventCallback<FilterCriteria> OnFilterChanged { get; set; }
+
+    private string FilterText { get; set; } = string.Empty;
+    private Guid SelectedCategoryId { get; set; } = Guid.Empty;
+    private SortOrder CurrentSortOrder { get; set; } = SortOrder.None;
+
+    private async Task ApplyFilters()
+    {
+        Logger.LogInformation("Applying filters. Text: '{FilterText}', CategoryId: {SelectedCategoryId}, SortOrder: {CurrentSortOrder}",
+            FilterText, SelectedCategoryId, CurrentSortOrder);
+        var criteria = new FilterCriteria
+        {
+            FilterText = this.FilterText,
+            CategoryId = this.SelectedCategoryId,
+            CurrentSortOrder = this.CurrentSortOrder
+        };
+        await OnFilterChanged.InvokeAsync(criteria);
+    }
+
+    public class FilterCriteria
+    {
+        public string FilterText { get; set; } = string.Empty;
+        public Guid CategoryId { get; set; } = Guid.Empty;
+        public SortOrder CurrentSortOrder { get; set; } = SortOrder.None;
+    }
+
+    public enum SortOrder
+    {
+        None,
+        NameAsc,
+        NameDesc,
+        CategoryNameAsc,
+        CategoryNameDesc,
+        // Add other sort options as needed: Store, DateAdded, etc.
+    }
+}

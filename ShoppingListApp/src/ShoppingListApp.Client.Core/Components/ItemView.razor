@@ -1,0 +1,113 @@
+@using ShoppingListApp.Shared.Models
+@using ShoppingListApp.Client.Core.Data
+@inject ShoppingRepository Repository
+@inject ILogger<ItemView> Logger
+
+@if (Item != null)
+{
+    <div class="item-view card mb-2">
+        <div class="card-body">
+            <h5 class="card-title">@Item.Name</h5>
+            <p class="card-text">
+                Category: @(Item.Category?.Name ?? "N/A") <br />
+                Store: @(Item.Store?.Name ?? "N/A") <br />
+                Purchase Type: @Item.PurchaseType <br />
+                Recurring: @(Item.IsRecurring ? "Yes" : "No") <br />
+                Active: @(Item.IsActive ? "Yes" : "No") <br />
+                Archived: @(Item.IsArchived ? "Yes" : "No")
+            </p>
+            <button class="btn btn-sm btn-primary me-2" @onclick="ToggleActive">@(Item.IsActive ? "Deactivate" : "Activate")</button>
+            @if (!Item.IsRecurring)
+            {
+                <button class="btn btn-sm btn-secondary me-2" @onclick="ToggleArchive" disabled="@(!Item.IsActive)">@(Item.IsArchived ? "Unarchive" : "Archive")</button>
+            }
+            <button class="btn btn-sm btn-danger" @onclick="DeleteItem">Delete</button>
+        </div>
+    </div>
+}
+else
+{
+    <p>No item to display or item not found.</p>
+}
+
+@code {
+    [Parameter]
+    public ListItem? Item { get; set; }
+
+    [Parameter]
+    public EventCallback<ListItem> OnItemChanged { get; set; } // To notify parent about changes
+
+    [Parameter]
+    public EventCallback<Guid> OnItemDeleted { get; set; } // To notify parent about deletion
+
+
+    private async Task ToggleActive()
+    {
+        if (Item == null) return;
+        Item.IsActive = !Item.IsActive;
+        if (!Item.IsActive) // If deactivated
+        {
+            if (Item.IsRecurring)
+            {
+                // For recurring items, deactivation means it's temporarily off the active list.
+                // It might be reactivated later (e.g. next shopping cycle).
+                Logger.LogInformation("Recurring item '{ItemName}' deactivated.", Item.Name);
+            }
+            else
+            {
+                // For non-recurring items, deactivating often implies it was purchased.
+                // The requirement is to archive it.
+                Item.IsArchived = true;
+                Logger.LogInformation("Non-recurring item '{ItemName}' deactivated and archived.", Item.Name);
+            }
+        }
+        else // If activated
+        {
+             Item.IsArchived = false; // Ensure not archived if activated
+             Logger.LogInformation("Item '{ItemName}' activated.", Item.Name);
+        }
+        await UpdateItem();
+    }
+
+    private async Task ToggleArchive()
+    {
+        if (Item == null || Item.IsRecurring || !Item.IsActive) return; // Archive only active, non-recurring
+        Item.IsArchived = !Item.IsArchived;
+        Logger.LogInformation("Item '{ItemName}' archive status changed to: {IsArchived}", Item.Name, Item.IsArchived);
+        await UpdateItem();
+    }
+
+    private async Task DeleteItem()
+    {
+        if (Item == null) return;
+        try
+        {
+            await Repository.DeleteListItemAsync(Item.Id);
+            Logger.LogInformation("Item '{ItemName}' deleted locally.", Item.Name);
+            await OnItemDeleted.InvokeAsync(Item.Id);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error deleting item '{ItemName}'", Item.Name);
+        }
+    }
+
+    private async Task UpdateItem()
+    {
+        if (Item == null) return;
+        try
+        {
+            await Repository.UpdateListItemAsync(Item);
+            Logger.LogInformation("Item '{ItemName}' updated locally.", Item.Name);
+            if (OnItemChanged.HasDelegate)
+            {
+                await OnItemChanged.InvokeAsync(Item);
+            }
+        }
+        catch(Exception ex)
+        {
+            Logger.LogError(ex, "Error updating item '{ItemName}'", Item.Name);
+            // Potentially revert changes or notify user
+        }
+    }
+}
